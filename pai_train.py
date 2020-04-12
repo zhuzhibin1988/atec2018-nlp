@@ -1,41 +1,35 @@
-#/usr/bin/env python
-#coding=utf-8
+# /usr/bin/env python
+# coding=utf-8
 
 indexes = []
 
 import time
+
 start_time = time.time()
-import multiprocessing
 import os
 import re
 import json
 import gensim
 import jieba
-import keras
-import keras.backend as K
-import numpy as np
 import pandas as pd
-from itertools import combinations
 from keras.activations import softmax
-from keras.callbacks import EarlyStopping, ModelCheckpoint,LambdaCallback, Callback, ReduceLROnPlateau, LearningRateScheduler
+from keras.callbacks import EarlyStopping, ModelCheckpoint, Callback, ReduceLROnPlateau
 from keras.layers import *
 from keras.models import Model
-from keras.optimizers import SGD, Adadelta, Adam, Nadam, RMSprop
-from keras.regularizers import L1L2, l2
+from keras.optimizers import Adam
+from keras.regularizers import L1L2
 from keras.preprocessing.sequence import pad_sequences
 from keras.engine.topology import Layer
 from keras import initializers, regularizers, constraints
 
-from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
 
-from gensim.models.word2vec import LineSentence
 from gensim.models.fasttext import FastText
-import copy
 
-os.environ["TF_CPP_MIN_LOG_LEVEL"]='3'
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = '3'
+model_dir = 'pai_model/'
 
 #####################################################################
 #                         数据加载预处理阶段
@@ -48,26 +42,28 @@ star = re.compile("\*+")
 
 test_size = 0.025
 random_state = 42
-fast_mode, fast_rate = False,0.01    # 快速调试，其评分不作为参考
-train_file = model_dir+"atec_nlp_sim_train.csv"
-def load_data(dtype = "both", input_length=[20,24], w2v_length=300):
+fast_mode, fast_rate = False, 0.01  # 快速调试，其评分不作为参考
+train_file = model_dir + "atec_nlp_sim_train.csv"
+df1 = pd.read_csv(train_file, sep="\t", header=None, names=["id", "sent1", "sent2", "label"], encoding="utf8")
 
-    def __load_data(dtype = "word", input_length=20, w2v_length=300):
 
-        filename = model_dir+"%s_%d_%d"%(dtype, input_length, w2v_length)
+def load_data(dtype="both", input_length=[20, 24], w2v_length=300):
+    def __load_data(dtype="word", input_length=20, w2v_length=300):
+
+        filename = model_dir + "%s_%d_%d" % (dtype, input_length, w2v_length)
         if os.path.exists(filename):
             return pd.read_pickle(filename)
 
         data_l_n = []
         data_r_n = []
         y = []
-        for line in open(train_file,"r", encoding="utf8"):
-            lineno, s1, s2, label=line.strip().split("\t")
+        for line in open(train_file, "r", encoding="utf8"):
+            lineno, s1, s2, label = line.strip().split("\t")
             if dtype == "word":
-                data_l_n.append([word2index[word] for word in list(jieba.cut(star.sub("1",s1))) if word in word2index]) 
-                data_r_n.append([word2index[word] for word in list(jieba.cut(star.sub("1",s2))) if word in word2index])
+                data_l_n.append([word2index[word] for word in list(jieba.cut(star.sub("1", s1))) if word in word2index])
+                data_r_n.append([word2index[word] for word in list(jieba.cut(star.sub("1", s2))) if word in word2index])
             if dtype == "char":
-                data_l_n.append([char2index[char] for char in s1 if char in char2index]) 
+                data_l_n.append([char2index[char] for char in s1 if char in char2index])
                 data_r_n.append([char2index[char] for char in s2 if char in char2index])
 
             y.append(int(label))
@@ -83,8 +79,8 @@ def load_data(dtype = "both", input_length=[20,24], w2v_length=300):
 
     if dtype == "both":
         ret_array = []
-        for dtype,input_length in zip(['word', 'char'],input_length):
-            data_l_n,data_r_n,y = __load_data(dtype, input_length, w2v_length)
+        for dtype, input_length in zip(['word', 'char'], input_length):
+            data_l_n, data_r_n, y = __load_data(dtype, input_length, w2v_length)
             ret_array.append(np.asarray(data_l_n))
             ret_array.append(np.asarray(data_r_n))
         ret_array.append(y)
@@ -92,16 +88,17 @@ def load_data(dtype = "both", input_length=[20,24], w2v_length=300):
     else:
         return __load_data(dtype, input_length, w2v_length)
 
-def input_data(sent1, sent2, dtype = "both", input_length=[20,24]):
-    def __input_data(sent1, sent2, dtype = "word", input_length=20):
+
+def input_data(sent1, sent2, dtype="both", input_length=[20, 24]):
+    def __input_data(sent1, sent2, dtype="word", input_length=20):
         data_l_n = []
         data_r_n = []
         for s1, s2 in zip(sent1, sent2):
             if dtype == "word":
-                data_l_n.append([word2index[word] for word in list(jieba.cut(star.sub("1",s1))) if word in word2index]) 
-                data_r_n.append([word2index[word] for word in list(jieba.cut(star.sub("1",s2))) if word in word2index])
+                data_l_n.append([word2index[word] for word in list(jieba.cut(star.sub("1", s1))) if word in word2index])
+                data_r_n.append([word2index[word] for word in list(jieba.cut(star.sub("1", s2))) if word in word2index])
             if dtype == "char":
-                data_l_n.append([char2index[char] for char in s1 if char in char2index]) 
+                data_l_n.append([char2index[char] for char in s1 if char in char2index])
                 data_r_n.append([char2index[char] for char in s2 if char in char2index])
 
         # 对齐语料中句子的长度 
@@ -112,8 +109,8 @@ def input_data(sent1, sent2, dtype = "both", input_length=[20,24]):
 
     if dtype == "both":
         ret_array = []
-        for dtype,input_length in zip(['word', 'char'],input_length):
-            data_l_n,data_r_n = __input_data(sent1, sent2, dtype, input_length)
+        for dtype, input_length in zip(['word', 'char'], input_length):
+            data_l_n, data_r_n = __input_data(sent1, sent2, dtype, input_length)
             ret_array.append(data_l_n)
             ret_array.append(data_r_n)
         return ret_array
@@ -124,15 +121,15 @@ def input_data(sent1, sent2, dtype = "both", input_length=[20,24]):
 ###########################################################################
 #                            训练验证集划分
 ###########################################################################
-def split_data(data,mode="train", test_size=test_size, random_state=random_state):
+def split_data(data, mode="train", test_size=test_size, random_state=random_state):
     # mode == "train":  划分成用于训练的四元组
     # mode == "orig":   划分成两组数据
     train = []
     test = []
     for data_i in data:
         if fast_mode:
-            data_i, _ = train_test_split(data_i,test_size=1-fast_rate,random_state=random_state )
-        train_data, test_data = train_test_split(data_i,test_size=test_size,random_state=random_state )
+            data_i, _ = train_test_split(data_i, test_size=1 - fast_rate, random_state=random_state)
+        train_data, test_data = train_test_split(data_i, test_size=test_size, random_state=random_state)
         train.append(np.asarray(train_data))
         test.append(np.asarray(test_data))
 
@@ -147,23 +144,23 @@ def split_data(data,mode="train", test_size=test_size, random_state=random_state
 #                         模型定义
 #####################################################################
 
-w2v_length = 300
+w2v_length = 256
 ebed_type = "gensim"
 # ebed_type = "fastcbow"
 
 if ebed_type == "gensim":
-    char_embedding_model = gensim.models.Word2Vec.load(model_dir + "char2vec_gensim%s"%w2v_length)
-    char2index = {v:k for k,v in enumerate(char_embedding_model.wv.index2word)}
-    word_embedding_model = gensim.models.Word2Vec.load(model_dir + "word2vec_gensim%s"%w2v_length)
-    word2index = {v:k for k,v in enumerate(word_embedding_model.wv.index2word)}
+    char_embedding_model = gensim.models.Word2Vec.load(model_dir + "char2vec_gensim%s" % w2v_length)
+    char2index = {v: k for k, v in enumerate(char_embedding_model.wv.index2word)}
+    word_embedding_model = gensim.models.Word2Vec.load(model_dir + "word2vec_gensim%s" % w2v_length)
+    word2index = {v: k for k, v in enumerate(word_embedding_model.wv.index2word)}
 
 elif ebed_type == "fastskip" or ebed_type == "fastcbow":
-    char_fastcbow = FastText.load(model_dir + "char2vec_%s%d"%(ebed_type, w2v_length))
+    char_fastcbow = FastText.load(model_dir + "char2vec_%s%d" % (ebed_type, w2v_length))
     char_embedding_matrix = char_fastcbow.wv.vectors
-    char2index = {v:k for k,v in enumerate(char_fastcbow.wv.index2word)}
-    word_fastcbow = FastText.load(model_dir + "word2vec_%s%d"%(ebed_type, w2v_length))
+    char2index = {v: k for k, v in enumerate(char_fastcbow.wv.index2word)}
+    word_fastcbow = FastText.load(model_dir + "word2vec_%s%d" % (ebed_type, w2v_length))
     word_embedding_matrix = word_fastcbow.wv.vectors
-    word2index = {v:k for k,v in enumerate(word_fastcbow.wv.index2word)}
+    word2index = {v: k for k, v in enumerate(word_fastcbow.wv.index2word)}
 
 print("loaded w2v done!", len(char2index), len(word2index))
 
@@ -171,15 +168,15 @@ MAX_LEN = 30
 MAX_EPOCH = 90
 train_batch_size = 64
 test_batch_size = 500
-earlystop_patience, plateau_patience = 8,2    # patience
+earlystop_patience, plateau_patience = 8, 2  # patience
 cfgs = [
-    ("siamese", "char", 24, ebed_type,  w2v_length,    [100, 80, 64, 64],   102-5, earlystop_patience),  # 69s
-    ("siamese", "word", 20, ebed_type,  w2v_length,    [100, 80, 64, 64],   120-4, earlystop_patience),  # 59s
-    ("esim",    "char", 24, ebed_type,  w2v_length,    [],             18,  earlystop_patience),  # 389s
-    ("esim",    "word", 20, ebed_type,  w2v_length,    [],             21,  earlystop_patience),  # 335s   
-    ("decom",   "char", 24, ebed_type,  w2v_length,    [],             87-2,  earlystop_patience),   # 84s
-    ("decom",   "word", 20, ebed_type,  w2v_length,    [],             104-4, earlystop_patience),  # 71s
-    ("dssm",    "both", [20,24], ebed_type,  w2v_length, [],           124-8, earlystop_patience), # 55s
+    ("siamese", "char", 24, ebed_type, w2v_length, [100, 80, 64, 64], 102 - 5, earlystop_patience),  # 69s
+    ("siamese", "word", 20, ebed_type, w2v_length, [100, 80, 64, 64], 120 - 4, earlystop_patience),  # 59s
+    ("esim", "char", 24, ebed_type, w2v_length, [], 18, earlystop_patience),  # 389s
+    ("esim", "word", 20, ebed_type, w2v_length, [], 21, earlystop_patience),  # 335s
+    ("decom", "char", 24, ebed_type, w2v_length, [], 87 - 2, earlystop_patience),  # 84s
+    ("decom", "word", 20, ebed_type, w2v_length, [], 104 - 4, earlystop_patience),  # 71s
+    ("dssm", "both", [20, 24], ebed_type, w2v_length, [], 124 - 8, earlystop_patience),  # 55s
 ]
 
 
@@ -210,11 +207,12 @@ def get_embedding_layers(dtype, input_length, w2v_length, with_weight=True):
 
     if dtype == "both":
         embedding = []
-        for dtype,input_length in zip(['word', 'char'],input_length):
+        for dtype, input_length in zip(['word', 'char'], input_length):
             embedding.append(__get_embedding_layers(dtype, input_length, w2v_length, with_weight))
         return embedding
     else:
         return __get_embedding_layers(dtype, input_length, w2v_length, with_weight)
+
 
 def create_pretrained_embedding(pretrained_weights_path, trainable=False, **kwargs):
     "Create embedding layer from a pretrained weights array"
@@ -240,7 +238,7 @@ def submult(input_1, input_2):
     "Get multiplication and subtraction then concatenate results"
     mult = Multiply()([input_1, input_2])
     sub = substract(input_1, input_2)
-    out_= Concatenate()([sub, mult])
+    out_ = Concatenate()([sub, mult])
     return out_
 
 
@@ -270,50 +268,52 @@ def soft_attention_alignment(input_1, input_2):
     "Align text representation with neural soft attention"
     attention = Dot(axes=-1)([input_1, input_2])
     w_att_1 = Lambda(lambda x: softmax(x, axis=1),
-                     output_shape=unchanged_shape)(attention)
-    w_att_2 = Permute((2,1))(Lambda(lambda x: softmax(x, axis=2),
-                             output_shape=unchanged_shape)(attention))
+        output_shape=unchanged_shape)(attention)
+    w_att_2 = Permute((2, 1))(Lambda(lambda x: softmax(x, axis=2),
+        output_shape=unchanged_shape)(attention))
     in1_aligned = Dot(axes=1)([w_att_1, input_1])
     in2_aligned = Dot(axes=1)([w_att_2, input_2])
     return in1_aligned, in2_aligned
 
-def decomposable_attention(pretrained_embedding='../data/fasttext_matrix.npy', 
+
+def decomposable_attention(pretrained_embedding='../data/fasttext_matrix.npy',
                            projection_dim=300, projection_hidden=0, projection_dropout=0.2,
                            compare_dim=500, compare_dropout=0.2,
                            dense_dim=300, dense_dropout=0.2,
                            lr=1e-3, activation='elu', maxlen=MAX_LEN):
     # Based on: https://arxiv.org/abs/1606.01933
-    
-    q1 = Input(name='q1',shape=(maxlen,))
-    q2 = Input(name='q2',shape=(maxlen,))
-    
+
+    q1 = Input(name='q1', shape=(maxlen,))
+    q2 = Input(name='q2', shape=(maxlen,))
+
     # Embedding
     # embedding = create_pretrained_embedding(pretrained_embedding, 
     #                                         mask_zero=False)
     embedding = pretrained_embedding
     q1_embed = embedding(q1)
     q2_embed = embedding(q2)
-    
+
+    # 前馈网络
     # Projection
     projection_layers = []
     if projection_hidden > 0:
         projection_layers.extend([
-                Dense(projection_hidden, activation=activation),
-                Dropout(rate=projection_dropout),
-            ])
-    projection_layers.extend([
-            Dense(projection_dim, activation=None),
+            Dense(projection_hidden, activation=activation),
             Dropout(rate=projection_dropout),
         ])
+    projection_layers.extend([
+        Dense(projection_dim, activation=None),
+        Dropout(rate=projection_dropout),
+    ])
     q1_encoded = time_distributed(q1_embed, projection_layers)
     q2_encoded = time_distributed(q2_embed, projection_layers)
-    
+
     # Attention
-    q1_aligned, q2_aligned = soft_attention_alignment(q1_encoded, q2_encoded)    
-    
+    q1_aligned, q2_aligned = soft_attention_alignment(q1_encoded, q2_encoded)
+
     # Compare
     q1_combined = Concatenate()([q1_encoded, q2_aligned, submult(q1_encoded, q2_aligned)])
-    q2_combined = Concatenate()([q2_encoded, q1_aligned, submult(q2_encoded, q1_aligned)]) 
+    q2_combined = Concatenate()([q2_encoded, q1_aligned, submult(q2_encoded, q1_aligned)])
     compare_layers = [
         Dense(compare_dim, activation=activation),
         Dropout(compare_dropout),
@@ -322,11 +322,11 @@ def decomposable_attention(pretrained_embedding='../data/fasttext_matrix.npy',
     ]
     q1_compare = time_distributed(q1_combined, compare_layers)
     q2_compare = time_distributed(q2_combined, compare_layers)
-    
+
     # Aggregate
     q1_rep = apply_multiple(q1_compare, [GlobalAvgPool1D(), GlobalMaxPool1D()])
     q2_rep = apply_multiple(q2_compare, [GlobalAvgPool1D(), GlobalMaxPool1D()])
-    
+
     # Classifier
     merged = Concatenate()([q1_rep, q2_rep])
     dense = BatchNormalization()(merged)
@@ -336,21 +336,20 @@ def decomposable_attention(pretrained_embedding='../data/fasttext_matrix.npy',
     dense = Dense(dense_dim, activation=activation)(dense)
     dense = Dropout(dense_dropout)(dense)
     out_ = Dense(1, activation='sigmoid')(dense)
-    
+
     model = Model(inputs=[q1, q2], outputs=out_)
     return model
 
 
-def esim(pretrained_embedding='../data/fasttext_matrix.npy', 
-         maxlen=MAX_LEN, 
-         lstm_dim=300, 
-         dense_dim=300, 
+def esim(pretrained_embedding='../data/fasttext_matrix.npy',
+         maxlen=MAX_LEN,
+         lstm_dim=300,
+         dense_dim=300,
          dense_dropout=0.5):
-             
     # Based on arXiv:1609.06038
-    q1 = Input(name='q1',shape=(maxlen,))
-    q2 = Input(name='q2',shape=(maxlen,))
-    
+    q1 = Input(name='q1', shape=(maxlen,))
+    q2 = Input(name='q2', shape=(maxlen,))
+
     # Embedding
     # embedding = create_pretrained_embedding(pretrained_embedding, mask_zero=False)
     embedding = pretrained_embedding
@@ -362,25 +361,25 @@ def esim(pretrained_embedding='../data/fasttext_matrix.npy',
     encode = Bidirectional(CuDNNLSTM(lstm_dim, return_sequences=True))
     q1_encoded = encode(q1_embed)
     q2_encoded = encode(q2_embed)
-    
+
     # Attention
     q1_aligned, q2_aligned = soft_attention_alignment(q1_encoded, q2_encoded)
-    
+
     # Compose
     q1_combined = Concatenate()([q1_encoded, q2_aligned, submult(q1_encoded, q2_aligned)])
-    q2_combined = Concatenate()([q2_encoded, q1_aligned, submult(q2_encoded, q1_aligned)]) 
-       
+    q2_combined = Concatenate()([q2_encoded, q1_aligned, submult(q2_encoded, q1_aligned)])
+
     compose = Bidirectional(CuDNNLSTM(lstm_dim, return_sequences=True))
     q1_compare = compose(q1_combined)
     q2_compare = compose(q2_combined)
-    
+
     # Aggregate
     q1_rep = apply_multiple(q1_compare, [GlobalAvgPool1D(), GlobalMaxPool1D()])
     q2_rep = apply_multiple(q2_compare, [GlobalAvgPool1D(), GlobalMaxPool1D()])
-    
+
     # Classifier
     merged = Concatenate()([q1_rep, q2_rep])
-    
+
     dense = BatchNormalization()(merged)
     dense = Dense(dense_dim, activation='elu')(dense)
     dense = BatchNormalization()(dense)
@@ -389,28 +388,30 @@ def esim(pretrained_embedding='../data/fasttext_matrix.npy',
     dense = BatchNormalization()(dense)
     dense = Dropout(dense_dropout)(dense)
     out_ = Dense(1, activation='sigmoid')(dense)
-    
+
     model = Model(inputs=[q1, q2], outputs=out_)
     return model
+
 
 def custom_loss(y_true, y_pred):
     margin = 1
     return K.mean(0.25 * y_true * K.square(1 - y_pred) +
-                (1 - y_true) * K.square(K.maximum(y_pred, 0)))
+                  (1 - y_true) * K.square(K.maximum(y_pred, 0)))
+
 
 def siamese(pretrained_embedding=None,
-            input_length=MAX_LEN, 
-            w2v_length=300, 
+            input_length=MAX_LEN,
+            w2v_length=300,
             n_hidden=[64, 64, 64]):
-    #输入层
+    # 输入层
     left_input = Input(shape=(input_length,), dtype='int32')
     right_input = Input(shape=(input_length,), dtype='int32')
 
-    #对句子embedding
+    # 对句子embedding
     encoded_left = pretrained_embedding(left_input)
     encoded_right = pretrained_embedding(right_input)
 
-    #两个LSTM共享参数
+    # 两个LSTM共享参数
     # # v1 一层lstm
     # shared_lstm = CuDNNLSTM(n_hidden)
 
@@ -418,12 +419,12 @@ def siamese(pretrained_embedding=None,
     ipt = Input(shape=(input_length, w2v_length))
     dropout_rate = 0.5
     x = Dropout(dropout_rate, )(ipt)
-    for i,hidden_length in enumerate(n_hidden):
+    for i, hidden_length in enumerate(n_hidden):
         # x = Bidirectional(CuDNNLSTM(hidden_length, return_sequences=(i!=len(n_hidden)-1), kernel_regularizer=L1L2(l1=0.01, l2=0.01)))(x)
         x = Bidirectional(CuDNNLSTM(hidden_length, return_sequences=True, kernel_regularizer=L1L2(l1=0.01, l2=0.01)))(x)
 
     # v3 卷及网络特征层
-    x = Conv1D(64, kernel_size = 2, strides = 1, padding = "valid", kernel_initializer = "he_uniform")(x)
+    x = Conv1D(64, kernel_size=2, strides=1, padding="valid", kernel_initializer="he_uniform")(x)
     x_p1 = GlobalAveragePooling1D()(x)
     x_p2 = GlobalMaxPooling1D()(x)
     x = Concatenate()([x_p1, x_p2])
@@ -432,14 +433,14 @@ def siamese(pretrained_embedding=None,
     left_output = shared_lstm(encoded_left)
     right_output = shared_lstm(encoded_right)
 
-
     # 距离函数 exponent_neg_manhattan_distance
     malstm_distance = Lambda(lambda x: K.exp(-K.sum(K.abs(x[0] - x[1]), axis=1, keepdims=True)),
-                            output_shape=lambda x: (x[0][0], 1))([left_output, right_output])
+        output_shape=lambda x: (x[0][0], 1))([left_output, right_output])
 
     model = Model([left_input, right_input], [malstm_distance])
 
     return model
+
 
 class Attention(Layer):
     def __init__(self, step_dim,
@@ -462,7 +463,7 @@ class Attention(Layer):
             model.add(Attention())
         """
         self.supports_masking = True
-        #self.init = initializations.get('glorot_uniform')
+        # self.init = initializations.get('glorot_uniform')
         self.init = initializers.get('glorot_uniform')
 
         self.W_regularizer = regularizers.get(W_regularizer)
@@ -480,18 +481,18 @@ class Attention(Layer):
         assert len(input_shape) == 3
 
         self.W = self.add_weight(shape=(input_shape[-1],),
-                                 initializer=self.init,
-                                 name='%s_W'%self.name,
-                                 regularizer=self.W_regularizer,
-                                 constraint=self.W_constraint)
+            initializer=self.init,
+            name='%s_W' % self.name,
+            regularizer=self.W_regularizer,
+            constraint=self.W_constraint)
         self.features_dim = input_shape[-1]
 
         if self.bias:
             self.b = self.add_weight(shape=(input_shape[1],),
-                                     initializer='zero',
-                                     name='%s_b'%self.name,
-                                     regularizer=self.b_regularizer,
-                                     constraint=self.b_constraint)
+                initializer='zero',
+                name='%s_b' % self.name,
+                regularizer=self.b_regularizer,
+                constraint=self.b_constraint)
         else:
             self.b = None
 
@@ -526,13 +527,13 @@ class Attention(Layer):
 
         a = K.expand_dims(a)
         weighted_input = x * a
-        #print weigthted_input.shape
+        # print weigthted_input.shape
         return K.sum(weighted_input, axis=1)
 
     def compute_output_shape(self, input_shape):
-        #return input_shape[0], input_shape[-1]
-        return input_shape[0],  self.features_dim
-        
+        # return input_shape[0], input_shape[-1]
+        return input_shape[0], self.features_dim
+
 
 def DSSM(pretrained_embedding, input_length, lstmsize=90):
     word_embedding, char_embedding = pretrained_embedding
@@ -540,11 +541,11 @@ def DSSM(pretrained_embedding, input_length, lstmsize=90):
 
     input1 = Input(shape=(wordlen,))
     input2 = Input(shape=(wordlen,))
-    lstm0 = CuDNNLSTM(lstmsize,return_sequences = True)
+    lstm0 = CuDNNLSTM(lstmsize, return_sequences=True)
     lstm1 = Bidirectional(CuDNNLSTM(lstmsize))
     lstm2 = CuDNNLSTM(lstmsize)
     att1 = Attention(wordlen)
-    den = Dense(64,activation = 'tanh')
+    den = Dense(64, activation='tanh')
 
     # att1 = Lambda(lambda x: K.max(x,axis = 1))
 
@@ -554,8 +555,8 @@ def DSSM(pretrained_embedding, input_length, lstmsize=90):
     v22 = lstm1(v2)
     v1ls = lstm2(lstm0(v1))
     v2ls = lstm2(lstm0(v2))
-    v1 = Concatenate(axis=1)([att1(v1),v11])
-    v2 = Concatenate(axis=1)([att1(v2),v22])
+    v1 = Concatenate(axis=1)([att1(v1), v11])
+    v2 = Concatenate(axis=1)([att1(v2), v22])
 
     input1c = Input(shape=(charlen,))
     input2c = Input(shape=(charlen,))
@@ -565,27 +566,26 @@ def DSSM(pretrained_embedding, input_length, lstmsize=90):
     v2c = char_embedding(input2c)
     v11c = lstm1c(v1c)
     v22c = lstm1c(v2c)
-    v1c = Concatenate(axis=1)([att1c(v1c),v11c])
-    v2c = Concatenate(axis=1)([att1c(v2c),v22c])
+    v1c = Concatenate(axis=1)([att1c(v1c), v11c])
+    v2c = Concatenate(axis=1)([att1c(v2c), v22c])
 
-
-    mul = Multiply()([v1,v2])
-    sub = Lambda(lambda x: K.abs(x))(Subtract()([v1,v2]))
-    maximum = Maximum()([Multiply()([v1,v1]),Multiply()([v2,v2])])
-    mulc = Multiply()([v1c,v2c])
-    subc = Lambda(lambda x: K.abs(x))(Subtract()([v1c,v2c]))
-    maximumc = Maximum()([Multiply()([v1c,v1c]),Multiply()([v2c,v2c])])
-    sub2 = Lambda(lambda x: K.abs(x))(Subtract()([v1ls,v2ls]))
-    matchlist = Concatenate(axis=1)([mul,sub,mulc,subc,maximum,maximumc,sub2])
+    mul = Multiply()([v1, v2])
+    sub = Lambda(lambda x: K.abs(x))(Subtract()([v1, v2]))
+    maximum = Maximum()([Multiply()([v1, v1]), Multiply()([v2, v2])])
+    mulc = Multiply()([v1c, v2c])
+    subc = Lambda(lambda x: K.abs(x))(Subtract()([v1c, v2c]))
+    maximumc = Maximum()([Multiply()([v1c, v1c]), Multiply()([v2c, v2c])])
+    sub2 = Lambda(lambda x: K.abs(x))(Subtract()([v1ls, v2ls]))
+    matchlist = Concatenate(axis=1)([mul, sub, mulc, subc, maximum, maximumc, sub2])
     matchlist = Dropout(0.05)(matchlist)
 
-    matchlist = Concatenate(axis=1)([Dense(32,activation = 'relu')(matchlist),Dense(48,activation = 'sigmoid')(matchlist)])
-    res = Dense(1, activation = 'sigmoid')(matchlist)
-
+    matchlist = Concatenate(axis=1)([Dense(32, activation='relu')(matchlist), Dense(48, activation='sigmoid')(matchlist)])
+    res = Dense(1, activation='sigmoid')(matchlist)
 
     model = Model(inputs=[input1, input2, input1c, input2c], outputs=res)
     return model
-    
+
+
 """
     From the paper:
         Averaging Weights Leads to Wider Optima and Better Generalization
@@ -595,11 +595,13 @@ def DSSM(pretrained_embedding, input_length, lstmsize=90):
         
     Author's implementation: https://github.com/timgaripov/swa
 """
+
+
 class SWA(Callback):
     def __init__(self, model, swa_model, swa_start):
         super().__init__()
-        self.model,self.swa_model,self.swa_start=model,swa_model,swa_start
-        
+        self.model, self.swa_model, self.swa_start = model, swa_model, swa_start
+
     def on_train_begin(self, logs=None):
         self.epoch = 0
         self.swa_n = 0
@@ -608,17 +610,18 @@ class SWA(Callback):
         if (self.epoch + 1) >= self.swa_start:
             self.update_average_model()
             self.swa_n += 1
-            
+
         self.epoch += 1
-            
+
     def update_average_model(self):
         # update running average of parameters
-        alpha = 1./(self.swa_n + 1)
-        for layer,swa_layer in zip(self.model.layers, self.swa_model.layers):
+        alpha = 1. / (self.swa_n + 1)
+        for layer, swa_layer in zip(self.model.layers, self.swa_model.layers):
             weights = []
-            for w1,w2 in zip(swa_layer.get_weights(), layer.get_weights()):
-                weights.append( (1-alpha)*w1 + alpha*w2)
+            for w1, w2 in zip(swa_layer.get_weights(), layer.get_weights()):
+                weights.append((1 - alpha) * w1 + alpha * w2)
             swa_layer.set_weights(weights)
+
 
 class LR_Updater(Callback):
     '''
@@ -626,6 +629,7 @@ class LR_Updater(Callback):
     Calculates and updates new learning rate and momentum at the end of each batch. 
     Have to be extended. 
     '''
+
     def __init__(self, init_lrs):
         self.init_lrs = init_lrs
 
@@ -648,29 +652,34 @@ class CircularLR(LR_Updater):
     A learning rate updater that implements the CircularLearningRate (CLR) scheme. 
     Learning rate is increased then decreased linearly. 
     '''
+
     def __init__(self, init_lrs, nb, div=4, cut_div=8, on_cycle_end=None):
-        self.nb,self.div,self.cut_div,self.on_cycle_end = nb,div,cut_div,on_cycle_end
+        self.nb, self.div, self.cut_div, self.on_cycle_end = nb, div, cut_div, on_cycle_end
         super().__init__(init_lrs)
 
     def on_train_begin(self, logs=None):
-        self.cycle_iter,self.cycle_count=0,0
+        self.cycle_iter, self.cycle_count = 0, 0
         super().on_train_begin()
 
     def calc_lr(self, init_lrs):
-        cut_pt = self.nb//self.cut_div
-        if self.cycle_iter>cut_pt:
-            pct = 1 - (self.cycle_iter - cut_pt)/(self.nb - cut_pt)
-        else: pct = self.cycle_iter/cut_pt
-        res = init_lrs * (1 + pct*(self.div-1)) / self.div
+        cut_pt = self.nb // self.cut_div
+        if self.cycle_iter > cut_pt:
+            pct = 1 - (self.cycle_iter - cut_pt) / (self.nb - cut_pt)
+        else:
+            pct = self.cycle_iter / cut_pt
+        res = init_lrs * (1 + pct * (self.div - 1)) / self.div
         self.cycle_iter += 1
-        if self.cycle_iter==self.nb:
+        if self.cycle_iter == self.nb:
             self.cycle_iter = 0
-            if self.on_cycle_end: self.on_cycle_end(self, self.cycle_count)
+            if self.on_cycle_end:
+                self.on_cycle_end(self, self.cycle_count)
             self.cycle_count += 1
         return res
 
+
 class TimerStop(Callback):
     """docstring for TimerStop"""
+
     def __init__(self, start_time, total_seconds):
         super(TimerStop, self).__init__()
         self.start_time = start_time
@@ -683,7 +692,7 @@ class TimerStop(Callback):
     def on_epoch_end(self, epoch, logs=None):
         self.epoch_seconds.append(time.time() - self.epoch_start)
 
-        mean_epoch_seconds = sum(self.epoch_seconds)/len(self.epoch_seconds)
+        mean_epoch_seconds = sum(self.epoch_seconds) / len(self.epoch_seconds)
         if time.time() + mean_epoch_seconds > self.start_time + self.total_seconds:
             self.model.stop_training = True
 
@@ -691,20 +700,20 @@ class TimerStop(Callback):
         print('timer stopping')
 
 
-def get_model(cfg,model_weights=None):
+def get_model(cfg, model_weights=None):
     print("=======   CONFIG: ", cfg)
 
-    model_type,dtype,input_length,ebed_type,w2v_length,n_hidden,n_epoch,patience = cfg
+    model_type, dtype, input_length, ebed_type, w2v_length, n_hidden, n_epoch, patience = cfg
     embedding = get_embedding_layers(dtype, input_length, w2v_length, with_weight=True)
 
     if model_type == "esim":
-        model = esim(pretrained_embedding=embedding, 
-            maxlen=input_length, 
-            lstm_dim=300, 
-            dense_dim=300, 
+        model = esim(pretrained_embedding=embedding,
+            maxlen=input_length,
+            lstm_dim=300,
+            dense_dim=300,
             dense_dropout=0.5)
     elif model_type == "decom":
-        model = decomposable_attention(pretrained_embedding=embedding, 
+        model = decomposable_attention(pretrained_embedding=embedding,
             projection_dim=300, projection_hidden=0, projection_dropout=0.2,
             compare_dim=500, compare_dropout=0.2,
             dense_dim=300, dense_dropout=0.2,
@@ -712,7 +721,7 @@ def get_model(cfg,model_weights=None):
     elif model_type == "siamese":
         model = siamese(pretrained_embedding=embedding, input_length=input_length, w2v_length=w2v_length, n_hidden=n_hidden)
     elif model_type == "dssm":
-        model = DSSM(pretrained_embedding=embedding,input_length=input_length, lstmsize=90)
+        model = DSSM(pretrained_embedding=embedding, input_length=input_length, lstmsize=90)
 
     if model_weights is not None:
         model.load_weights(model_weights)
@@ -720,77 +729,84 @@ def get_model(cfg,model_weights=None):
     # keras.utils.plot_model(model, to_file=model_dir+model_type+"_"+dtype+'.png', show_shapes=True, show_layer_names=True, rankdir='TB')
     return model
 
+
 #####################################################################
 #                         评估指标和最佳阈值
 #####################################################################
 
-def r_f1_thresh(y_pred,y_true,step=1000):
-    e = np.zeros((len(y_true),2))
-    e[:,0] = y_pred.reshape(-1)
-    e[:,1] = y_true
+def r_f1_thresh(y_pred, y_true, step=1000):
+    e = np.zeros((len(y_true), 2))
+    e[:, 0] = y_pred.reshape(-1)
+    e[:, 1] = y_true
     f = pd.DataFrame(e)
-    thrs = np.linspace(0,1,step+1)
-    x = np.array([f1_score(y_pred=f.loc[:,0]>thr, y_true=f.loc[:,1]) for thr in thrs])
-    f1_, thresh = max(x),thrs[x.argmax()]
+    thrs = np.linspace(0, 1, step + 1)
+    x = np.array([f1_score(y_pred=f.loc[:, 0] > thr, y_true=f.loc[:, 1]) for thr in thrs])
+    f1_, thresh = max(x), thrs[x.argmax()]
     return f.corr()[0][1], f1_, thresh
+
 
 #####################################################################
 #                         模型训练和保存
 #####################################################################
-configs_path = model_dir+"all_configs.json"
+configs_path = model_dir + "all_configs.json"
+
+
 def save_config(filepath, cfg):
     configs = {}
-    if os.path.exists(configs_path): configs = json.loads(open(configs_path,"r",encoding="utf8").read())
+    if os.path.exists(configs_path):
+        configs = json.loads(open(configs_path, "r", encoding="utf8").read())
     configs[filepath] = cfg
-    open(configs_path,"w",encoding="utf8").write(json.dumps(configs, indent=2, ensure_ascii=False))
+    open(configs_path, "w", encoding="utf8").write(json.dumps(configs, indent=2, ensure_ascii=False))
+
 
 def train_model(model, swa_model, cfg):
-    model_type,dtype,input_length,ebed_type,w2v_length,n_hidden,n_epoch,patience = cfg
+    model_type, dtype, input_length, ebed_type, w2v_length, n_hidden, n_epoch, patience = cfg
 
     data = load_data(dtype, input_length, w2v_length)
     train_x, train_y, test_x, test_y = split_data(data)
-    filepath=model_dir+model_type+"_"+dtype+time.strftime("_%m-%d %H-%M-%S")+".h5"   # 每次运行的模型都进行保存，不覆盖之前的结果
-    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=0, save_best_only=True,save_weights_only=True, mode='auto')
+    filepath = model_dir + model_type + "_" + dtype + time.strftime("_%m-%d %H-%M-%S") + ".h5"  # 每次运行的模型都进行保存，不覆盖之前的结果
+    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=0, save_best_only=True, save_weights_only=True, mode='auto')
     earlystop = EarlyStopping(monitor='val_loss', min_delta=0, patience=patience, verbose=0, mode='auto')
-    reduce_lr = ReduceLROnPlateau(monitor='val_loss', verbose=0, factor=0.5,patience=2, min_lr=1e-6)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', verbose=0, factor=0.5, patience=2, min_lr=1e-6)
     swa_cbk = SWA(model, swa_model, swa_start=1)
 
     init_lrs = 0.001
-    clr_div,cut_div = 10, 8
-    batch_num = (train_x[0].shape[0]-1) // train_batch_size + 1
+    clr_div, cut_div = 10, 8
+    batch_num = (train_x[0].shape[0] - 1) // train_batch_size + 1
     cycle_len = 1
-    total_iterators = batch_num*cycle_len
-    print("total iters per cycle(epoch):",total_iterators)
+    total_iterators = batch_num * cycle_len
+    print("total iters per cycle(epoch):", total_iterators)
     circular_lr = CircularLR(init_lrs, total_iterators, on_cycle_end=None, div=clr_div, cut_div=cut_div)
     callbacks = [checkpoint, earlystop, swa_cbk, circular_lr]
     callbacks.append(TimerStop(start_time=start_time, total_seconds=7100))
 
     def fit(n_epoch=n_epoch):
         history = model.fit(x=train_x, y=train_y,
-            class_weight={0:1/np.mean(train_y),1:1/(1-np.mean(train_y))},
+            class_weight={0: 1 / np.mean(train_y), 1: 1 / (1 - np.mean(train_y))},
             validation_data=((test_x, test_y)),
-            batch_size=train_batch_size, 
-            callbacks=callbacks, 
-            epochs=n_epoch,verbose=2)
+            batch_size=train_batch_size,
+            callbacks=callbacks,
+            epochs=n_epoch, verbose=2)
         return history
 
-    loss,metrics = 'binary_crossentropy',['binary_crossentropy',"accuracy"]
+    loss, metrics = 'binary_crossentropy', ['binary_crossentropy', "accuracy"]
 
     model.compile(optimizer=Adam(lr=init_lrs, beta_1=0.8), loss=loss, metrics=metrics)
     fit()
 
-    filepath_swa = model_dir + filepath.split("/")[-1].split(".")[0]+"-swa.h5"
+    filepath_swa = model_dir + filepath.split("/")[-1].split(".")[0] + "-swa.h5"
     swa_cbk.swa_model.save_weights(filepath_swa)
 
     # 保存配置，方便多模型集成
     save_config(filepath, cfg)
     save_config(filepath_swa, cfg)
 
+
 def train_all_models(index):
     cfg = cfgs[index]
     K.clear_session()
-    model = get_model(cfg,None)
-    swa_model = get_model(cfg,None)
+    model = get_model(cfg, None)
+    swa_model = get_model(cfg, None)
     train_model(model, swa_model, cfg)
 
 
@@ -799,81 +815,85 @@ def train_all_models(index):
 #####################################################################
 
 evaluate_path = model_dir + "y_pred.pkl"
+
+
 def evaluate_models():
     train_y_preds, test_y_preds = [], []
-    all_cfgs = json.loads(open(configs_path,'r',encoding="utf8").read())
+    all_cfgs = json.loads(open(configs_path, 'r', encoding="utf8").read())
     num_clfs = len(all_cfgs)
 
     for weight, cfg in all_cfgs.items():
         K.clear_session()
-        model_type,dtype,input_length,ebed_type,w2v_length,n_hidden,n_epoch,patience = cfg   
+        model_type, dtype, input_length, ebed_type, w2v_length, n_hidden, n_epoch, patience = cfg
         data = load_data(dtype, input_length, w2v_length)
         train_x, train_y, test_x, test_y = split_data(data)
-        model = get_model(cfg,weight)
+        model = get_model(cfg, weight)
         train_y_preds.append(model.predict(train_x, batch_size=test_batch_size).reshape(-1))
         test_y_preds.append(model.predict(test_x, batch_size=test_batch_size).reshape(-1))
 
-    train_y_preds,test_y_preds = np.array(train_y_preds),np.array(test_y_preds)
-    pd.to_pickle([train_y_preds,train_y,test_y_preds,test_y],evaluate_path)
+    train_y_preds, test_y_preds = np.array(train_y_preds), np.array(test_y_preds)
+    pd.to_pickle([train_y_preds, train_y, test_y_preds, test_y], evaluate_path)
 
 
 blending_path = model_dir + "blending_gdbm.pkl"
+
+
 def train_blending():
     """ 根据配置文件和验证集的值计算融合模型 """
-    train_y_preds,train_y,valid_y_preds,valid_y = pd.read_pickle(evaluate_path)
+    train_y_preds, train_y, valid_y_preds, valid_y = pd.read_pickle(evaluate_path)
     train_y_preds = train_y_preds.T
     valid_y_preds = valid_y_preds.T
 
-    '''融合使用的模型'''
+    '''使用回归算法融合模型'''
     clf = LogisticRegression()
     clf.fit(valid_y_preds, valid_y)
 
-    train_y_preds_blend = clf.predict_proba(train_y_preds)[:,1]
-    r,f1,train_thresh = r_f1_thresh(train_y_preds_blend, train_y)
+    train_y_preds_blend = clf.predict_proba(train_y_preds)[:, 1]
+    r, f1, train_thresh = r_f1_thresh(train_y_preds_blend, train_y)
 
-    valid_y_preds_blend = clf.predict_proba(valid_y_preds)[:,1]
-    r,f1,valid_thresh = r_f1_thresh(valid_y_preds_blend, valid_y)
-    pd.to_pickle(((train_thresh+valid_thresh)/2,clf), blending_path)
+    valid_y_preds_blend = clf.predict_proba(valid_y_preds)[:, 1]
+    r, f1, valid_thresh = r_f1_thresh(valid_y_preds_blend, valid_y)
+    pd.to_pickle(((train_thresh + valid_thresh) / 2, clf), blending_path)
 
 
 def result():
     global df1
-    all_cfgs = json.loads(open(configs_path,'r',encoding="utf8").read())
+    all_cfgs = json.loads(open(configs_path, 'r', encoding="utf8").read())
     num_clfs = len(all_cfgs)
     test_y_preds = []
     X = {}
     for cfg in all_cfgs.values():
-        model_type,dtype,input_length,ebed_type,w2v_length,n_hidden,n_epoch,patience = cfg
+        model_type, dtype, input_length, ebed_type, w2v_length, n_hidden, n_epoch, patience = cfg
         key_ = f"{dtype}_{input_length}"
-        if key_ not in X: X[key_] = input_data(df1["sent1"],df1["sent2"], dtype = dtype, input_length=input_length)
+        if key_ not in X:
+            X[key_] = input_data(df1["sent1"], df1["sent2"], dtype=dtype, input_length=input_length)
 
     for weight, cfg in all_cfgs.items():
         K.clear_session()
-        model_type,dtype,input_length,ebed_type,w2v_length,n_hidden,n_epoch,patience = cfg
+        model_type, dtype, input_length, ebed_type, w2v_length, n_hidden, n_epoch, patience = cfg
         key_ = f"{dtype}_{input_length}"
         model = get_model(cfg, weight)
         test_y_preds.append(model.predict(X[key_], batch_size=test_batch_size).reshape(-1))
 
     test_y_preds = np.array(test_y_preds).T
-    thresh,clf = pd.read_pickle(blending_path)
-    result = clf.predict_proba(test_y_preds)[:,1].reshape(-1)>thresh
+    thresh, clf = pd.read_pickle(blending_path)
+    result = clf.predict_proba(test_y_preds)[:, 1].reshape(-1) > thresh
 
-    df_output = pd.concat([df1["id"],pd.Series(result,name="label",dtype=np.int32)],axis=1)
-    
-    topai(1,df_output)
+    df_output = pd.concat([df1["id"], pd.Series(result, name="label", dtype=np.int32)], axis=1)
 
-
+    # topai(1, df_output)
 
 
 # 文档第二步，训练多个不同的模型，index取值为0-6
-if False:
-    train_all_models(index=0)
+if True:
+    for n in range(6):
+        train_all_models(index=n)
 
 # 文档第三步，训练blending模型
-if False:
+if True:
     evaluate_models()
     train_blending()
 
 # 文档第四步，测试blending模型
-if False:
+if True:
     result()
